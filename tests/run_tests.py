@@ -129,6 +129,32 @@ def test_claude_advanced_workflows_are_flagged():
               for h in r["hits"]), str(r["hits"])[:200])
 
 
+def test_requires_extraction_and_preflight():
+    print("抽取依赖清单并生成可跑的 preflight.sh")
+    rc, r = run(os.path.join(FIXTURES, "requires-sample"))
+    req = r["requires"]
+    names = lambda k: {i["name"] for i in req.get(k) or []}
+    check("抽出 pip 包", "pikepdf" in names("python"), str(names("python")))
+    check("抽出 brew 包", "ghostscript" in names("brew"), str(names("brew")))
+    check("抽出环境变量", "PDF_OUT" in names("env"), str(names("env")))
+    check("家目录路径展开为 $HOME", any("$HOME" in i["check"] for i in req["paths"]), str(req["paths"]))
+    check("抽出 MCP 服务器", "rea" in names("mcp"), str(names("mcp")))
+    check("不因依赖清单而判失败", rc == 0, f"rc={rc}")
+
+    tmp = tempfile.mkdtemp(prefix="preflight-test-")
+    try:
+        sh = os.path.join(tmp, "preflight.sh")
+        run(os.path.join(FIXTURES, "requires-sample"), "--emit-sh", sh)
+        content = read(sh)
+        check("脚本只查不装", "pip install pikepdf" in content and "then " in content, content[:120])
+        check("脚本可执行位", os.access(sh, os.X_OK), oct(os.stat(sh).st_mode))
+        proc = subprocess.run(["sh", sh], capture_output=True, text=True)
+        check("缺依赖时退出码非 0", proc.returncode > 0, str(proc.returncode))
+        check("输出带补救提示", "→" in proc.stdout, proc.stdout[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     for fn in (
         test_dry_run_flags_codex_leftovers,
@@ -137,6 +163,7 @@ def main():
         test_claude_frontmatter_keys,
         test_long_description_is_warning_not_blocker,
         test_claude_advanced_workflows_are_flagged,
+        test_requires_extraction_and_preflight,
     ):
         fn()
     print()

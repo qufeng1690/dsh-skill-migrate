@@ -41,7 +41,7 @@ DSH 只读技能开头的 `name` 和 `description`，正文和脚本里写了什
 | 自动改写 7 类（路径、变量、工具名、文件名、frontmatter 归一化） | 判断能力是否等价 —— 只报告"我们没 `image_gen`"，不替你选替代品 |
 | 把"没有对应物"的地方列成清单，逼你做决定，不静默吞掉 | 装依赖、下载模型、跑技能里的命令 |
 | 干净输入不报警（有测试保证） | 读二进制、图片里的文字，或 `"image"+"_gen"` 这种拼接 |
-| 一条命令跑六组回归测试，CI 里也跑 | 评估触发质量 —— 那得用真实对话试 |
+| 一条命令跑七组回归测试，CI 里也跑 | 评估触发质量 —— 那得用真实对话试 |
 
 ## 安装
 
@@ -103,6 +103,48 @@ python3 $P <src> --report PORT.md --json
 ## 建议处理
 - `fm-short-desc` ×1 — short-description 不在 DSH 白名单，会进 metadata
 ```
+
+## 让别人的 agent 自己查：`--requires` / `--emit-sh`
+
+前面的清单告诉你"哪句话会断"。这一节回答另一个问题：**这台机器到底缺什么。**
+
+```bash
+python3 scripts/migrate_skill.py <src> --emit-sh preflight.sh
+sh preflight.sh          # 只检查，不安装
+```
+
+生成的脚本从正文里抽出八类东西并逐条验证：
+
+| 类别 | 从哪来 | 检查命令 |
+|---|---|---|
+| 工具 | `command -v x`、代码块首词 | `command -v dotnet` |
+| Python 包 | `pip install x` | `python3 -c "import x"` |
+| Node 包 | `npm i x`、`npx x` | `npm ls -g x` |
+| brew 包 | `brew install x` | `brew list x` |
+| 环境变量 | `$DFROOT`、`${PDF_OUT}` | `test -n "${DFROOT:-}"` |
+| 路径 | `~/工具箱/dfpak` | `test -e "$HOME/工具箱/dfpak"` |
+| MCP 服务器 | `mcp__rea__decompile` | 人工确认（打印问号） |
+| 外网地址 | 正文里的 `https://…` | `curl -sI --max-time 5` |
+
+真实输出（`tests/fixtures/requires-sample`）：
+
+```
+✓ python3
+✗ gs → 安装 gs 后重试
+✗ pikepdf → python3 -m pip install pikepdf
+✗ PDF_OUT → export PDF_OUT=<值>
+? rea — 加 MCP 服务器 rea（需人工确认）
+
+5 项缺失
+```
+
+三点设计取舍：
+
+- **只查不装**：脚本里没有任何 `install` 的执行，只有 `echo` 告诉你该敲什么。装不装由人决定。
+- **不改原文件**：`--requires` 是只读的，不往技能里塞字段，也不要求作者配合。
+- **缺了不算失败**：依赖清单不参与退出码，`rc` 仍然只反映"能不能迁移"。
+
+这条正好接在 `dsh-skill-mover` 之后：搬过来的技能，agent 一条命令就知道缺什么，再问你要不要装。
 
 ## 检查清单（21 条 + 1 条软提醒）
 
@@ -206,7 +248,7 @@ env | grep -iE "codex|dsh" >> miss.json
 ## 开发
 
 ```bash
-python3 tests/run_tests.py          # 五个用例，只用标准库
+python3 tests/run_tests.py          # 七个用例，只用标准库
 pip install pyyaml && python3 tests/run_tests.py   # 有 pyyaml 的路径也测一遍
 ```
 
@@ -217,6 +259,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu + macos、Python 3.9 + 3.12 上，�
 - `0.1.0` —— 17 条检查、5 组测试、双解析器（pyyaml / 内置）
 - `0.2.0` —— 19 条检查 + 1 条软提醒、5 组测试；description 超长不再阻塞（79 个真实技能回归后修正）
 - `0.3.0` —— 21 条检查、6 组测试；新增 `claude-hooks` / `claude-subagent`（Claude 高级工作流不再被静默丢掉），README 增「它不做什么」
+- `0.4.0` —— 新增 `--requires` / `--emit-sh`：从正文抽八类依赖，生成只查不装的 `preflight.sh`；7 组测试
 
 ## License
 

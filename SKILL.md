@@ -21,9 +21,23 @@ python3 $P <技能目录或单个.md>                  # 体检，不写盘
 python3 $P <src> --out /tmp/try --apply         # 先落临时目录看效果
 python3 $P <src> --apply                        # 迁到 ~/.dsh/skills/<name>
 python3 $P <src> --report PORT.md --json        # 存报告 / 机器可读
+python3 $P <src> --emit-sh preflight.sh         # 生成"这台机器缺什么"的自检脚本
 ```
 
 退出码：`0` 干净、`1` 有必须先解决或没有对应物的问题、`2` 源读不了。
+
+## 依赖自检（交给用户或 agent 自己跑）
+
+技能搬过去能加载，不代表需要的工具都在。`--emit-sh` 会从正文里抽八类东西——工具、pip/npm/brew 包、环境变量、路径、MCP 服务器、外网地址——生成 `preflight.sh`：
+
+```bash
+python3 $P <src> --emit-sh /tmp/preflight.sh && sh /tmp/preflight.sh
+# ✓ python3
+# ✗ pikepdf → python3 -m pip install pikepdf
+# ? rea — 加 MCP 服务器 rea（需人工确认）
+```
+
+三条底线：**只查不装**（脚本里没有 install 执行）、**不改原文件**、**缺依赖不影响退出码**。缺什么、装不装，由人点头。
 
 ## 报告怎么读
 

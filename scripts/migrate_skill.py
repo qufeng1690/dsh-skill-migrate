@@ -246,6 +246,116 @@ def dump_frontmatter(fm):
     return f"---\n{body}\n---\n"
 
 
+IGNORE_BINS = {
+    "cd", "echo", "export", "source", "sudo", "then", "fi", "if", "for", "do", "done",
+    "else", "elif", "while", "case", "esac", "exit", "return", "set", "unset", "read",
+    "cat", "ls", "cp", "mv", "rm", "mkdir", "chmod", "chown", "touch", "grep", "sed",
+    "awk", "find", "head", "tail", "sort", "uniq", "wc", "cut", "tr", "xargs", "tee",
+    "git", "curl", "wget", "open", "which", "command", "test", "kill", "ps", "sleep",
+    "python", "node", "sh", "bash", "zsh", "env", "make", "npm", "npx", "pip", "pip3",
+}
+IGNORE_ENV = {"PATH", "HOME", "PWD", "SHELL", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM"}
+URL_RE = re.compile(r'https?://[^\s)"\'`<>]+')
+
+
+def _uniq(items):
+    seen, out = set(), []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
+
+
+def _path_check(path):
+    expanded = "$HOME" + path[1:] if path.startswith("~") else path
+    return f'test -e "{expanded}"'
+
+
+def collect_requires(root):
+    """从技能正文里抽出"这台机器得先有什么"，只读，不执行、不联网。"""
+    texts = []
+    for path in iter_text_files(root):
+        try:
+            text = read_text(path)
+        except OSError:
+            continue
+        texts.append((path, text))
+    blob = "\n".join(t for _, t in texts)
+
+    pips = re.findall(r'(?:python3?\s+-m\s+)?pip3?\s+install\s+(?:-[A-Za-z-]+\s+)*([A-Za-z0-9_.\-]+)', blob)
+    npms = re.findall(r'npm\s+(?:install|i)\s+(?:-g\s+)?(@?[A-Za-z0-9_./\-]+)', blob)
+    npxs = re.findall(r'npx\s+(@?[A-Za-z0-9_./\-]+)', blob)
+    brews = re.findall(r'brew\s+install\s+(?:--cask\s+)?([A-Za-z0-9@/.\-]+)', blob)
+    checked = re.findall(r'(?:command\s+-v|which)\s+([A-Za-z0-9_.\-]+)', blob)
+    fences = re.findall(r'(?m)^(?:\s*\$\s*)?(?:(?:sudo|env)\s+)?([a-z][a-z0-9_.\-]{1,20})\s+-', blob)
+    envs = re.findall(r'\$\{?([A-Z][A-Z0-9_]{2,})\}?', blob)
+    paths = re.findall(r'(?:~/[^\s"\'`)|<>,;]+|/var/[^\s"\'`)|<>,;]+|/Users/[^\s"\'`)|<>,;]+)', blob)
+    mcps = re.findall(r'mcp__([A-Za-z0-9_]+)__', blob)
+    urls = URL_RE.findall(blob)
+
+    tools = _uniq([t for t in checked + fences if t not in IGNORE_BINS])
+    return {
+        "tools": [{"name": t, "check": f"command -v {t}", "hint": f"安装 {t} 后重试"}
+                  for t in tools],
+        "python": [{"name": p_, "check": f'python3 -c "import {p_.replace("-", "_")}"',
+                    "hint": f"python3 -m pip install {p_}"} for p_ in _uniq(pips)],
+        "node": [{"name": n, "check": f"npm ls -g {n.split('/')[0]}",
+                  "hint": f"npm i -g {n}"} for n in _uniq(npms + npxs)],
+        "brew": [{"name": b, "check": f"brew list {b}", "hint": f"brew install {b}"}
+                 for b in _uniq(brews)],
+        "env": [{"name": e, "check": f'test -n "${{{e}:-}}"', "hint": f"export {e}=<值>"}
+                for e in _uniq([e for e in envs if e not in IGNORE_ENV])],
+        "paths": [{"name": p_, "check": _path_check(p_), "hint": "放到位或改技能里的路径"}
+                  for p_ in _uniq(paths)],
+        "mcp": [{"name": m, "check": "(在 DSH 设置→MCP Servers 里看)", "hint": f"加 MCP 服务器 {m}"}
+                for m in _uniq(mcps)],
+        "urls": [{"name": u, "check": f"curl -sI --max-time 5 {u} >/dev/null", "hint": "确认能联网访问"}
+                 for u in _uniq(urls)][:20],
+    }
+
+
+def render_requires(req):
+    groups = [("工具", "tools"), ("Python 包", "python"), ("Node 包", "node"),
+              ("brew 包", "brew"), ("环境变量", "env"), ("路径", "paths"),
+              ("MCP 服务器", "mcp"), ("外网地址", "urls")]
+    total = sum(len(req.get(k) or []) for _, k in groups)
+    if not total:
+        return []
+    lines = ["", "## 这台机器需要先具备（交给 agent 自查，不自动安装）"]
+    for label, key in groups:
+        items = req.get(key) or []
+        if not items:
+            continue
+        lines.append("")
+        lines.append(f"**{label}**")
+        for it in items:
+            lines.append(f"- [ ] `{it['name']}` — 检查：`{it['check']}` — 缺了：{it['hint']}")
+    lines += ["", "想让 agent 一条命令查完：`migrate_skill.py <src> --emit-sh preflight.sh && sh preflight.sh`"]
+    return lines
+
+
+def emit_preflight(req, name, path):
+    lines = ["#!/bin/sh", f"# preflight for {name}", "# 只检查，不安装。缺什么由人决定要不要装。", "fail=0"]
+    for _, key in (("工具", "tools"), ("Python 包", "python"), ("Node 包", "node"),
+                   ("brew 包", "brew"), ("环境变量", "env"), ("路径", "paths"),
+                   ("MCP 服务器", "mcp"), ("外网地址", "urls")):
+        for it in req.get(key) or []:
+            desc = it["name"].replace('"', "'")
+            chk = it["check"].replace('"', '\"')
+            hint = it["hint"].replace('"', "'")
+            if key == "mcp":
+                lines.append(f'echo "? {desc} — {hint}（需人工确认）"')
+                continue
+            suffix = "" if ">/dev/null" in chk else " >/dev/null 2>&1"
+            lines.append(f'if {chk}{suffix}; then echo "✓ {desc}"; '
+                         f'else echo "✗ {desc} → {hint}"; fail=$((fail+1)); fi')
+    lines += ['echo', 'if [ "$fail" -eq 0 ]; then echo "全部就绪"; else echo "$fail 项缺失"; fi', 'exit "$fail"', '']
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    os.chmod(path, 0o755)
+
+
 def port(src, out, apply_changes, quiet=False):
     src_is_dir = os.path.isdir(src)
     skill_md = os.path.join(src, "SKILL.md") if src_is_dir else src
@@ -272,6 +382,7 @@ def port(src, out, apply_changes, quiet=False):
         "problems": problems,
         "warnings": desc_warnings(fm),
         "hits": hits,
+        "requires": collect_requires(src),
         "applied": [],
         "out": None,
     }
@@ -371,6 +482,7 @@ def render_md(report):
             grouped.setdefault(h["rule"], []).append(h)
         for rule, hs in grouped.items():
             lines.append(f"- `{rule}` ×{len(hs)} — {hs[0]['note']}")
+    lines += render_requires(report.get("requires") or {})
     if report.get("validate"):
         v = report["validate"]
         lines += ["", "## quick_validate", "```", v["out"], "```"]
@@ -385,6 +497,8 @@ def main():
     ap.add_argument("--report", help="把 PORT.md 写到这个路径")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--no-validate", action="store_true", help="跳过 quick_validate")
+    ap.add_argument("--emit-sh", metavar="FILE",
+                    help="生成 preflight.sh：把技能需要的工具/包/变量/路径逐条检查（只查不装）")
     args = ap.parse_args()
 
     if not os.path.exists(args.src):
@@ -396,6 +510,10 @@ def main():
         return 2
     if args.apply and not args.no_validate and report.get("out"):
         report["validate"] = validate(report["out"])
+
+    if args.emit_sh:
+        emit_preflight(report.get("requires") or {}, report["name"], args.emit_sh)
+        log(f"[ok] preflight → {args.emit_sh}")
 
     md = render_md(report)
     if args.report:
