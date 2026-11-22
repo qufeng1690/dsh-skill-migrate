@@ -155,6 +155,23 @@ def test_requires_extraction_and_preflight():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_tiers_abc_are_reported():
+    print("每条问题都标了 A/B/C 档")
+    rc, r = run(os.path.join(FIXTURES, "codex-sample"))
+    tiers = {h["tier"] for h in r["hits"]}
+    check("JSON 里带 tier 字段", tiers and tiers <= {"A", "B", "C"}, str(sorted(tiers)))
+    check("自动改写的算 A", any(h["tier"] == "A" and h["severity"] == "REWRITE" for h in r["hits"]))
+    check("必须人处置的算 C", any(h["tier"] == "C" and h["severity"] == "UNSUPPORTED" for h in r["hits"]))
+    check("建议的算 B", any(h["tier"] == "B" and h["severity"] == "WARN" for h in r["hits"]))
+
+    proc = subprocess.run([sys.executable, SCRIPT, os.path.join(FIXTURES, "codex-sample")],
+                          capture_output=True, text=True)
+    md = proc.stdout
+    for marker in ("A 级", "B 级", "C 级"):
+        check(f"报告正文解释了 {marker}", marker in md)
+    check("C 级段落说明原样保留", "原样保留" in md, md[:400])
+
+
 def main():
     for fn in (
         test_dry_run_flags_codex_leftovers,
@@ -164,6 +181,7 @@ def main():
         test_long_description_is_warning_not_blocker,
         test_claude_advanced_workflows_are_flagged,
         test_requires_extraction_and_preflight,
+        test_tiers_abc_are_reported,
     ):
         fn()
     print()

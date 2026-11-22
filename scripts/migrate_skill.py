@@ -40,6 +40,19 @@ BODY_SOFT_LIMIT = 8000      # 正文超过这个体量，说明该拆 references
 
 # (id, regex, severity, note, replacement)
 # severity: REWRITE 可自动替换 / UNSUPPORTED 必须人工处置 / WARN 建议处理
+
+# A/B/C 分级：把"规则后果"翻译成别人看得懂的三档
+# A = 有把握等价，工具直接改；B = 只能算近似，动手前要人点头；C = 没证据，别碰，列出来
+TIER = {
+    "REWRITE": ("A", "等价改写，已自动完成"),
+    "WARN": ("B", "近似或建议，需要你确认"),
+    "UNSUPPORTED": ("C", "没法确认，原样保留"),
+}
+TIER_LEGEND = [
+    "- **A 级**：等价改写，工具直接改（`--apply` 时写盘）。判 A 的标准很窄：新旧工具做的是同一件事，只是名字不同。",
+    "- **B 级**：只能算近似，或者只是建议。动手前要你看一眼，改了会丢什么得你自己判断。",
+    "- **C 级**：找不到可靠替代，或者没有足够证据。原样保留，只报告，不动手。",
+]
 RULES = [
     ("codex-home-env",
      r'os\.environ\.get\(\s*["\']CODEX_HOME["\']\s*,\s*os\.path\.expanduser\(\s*["\']~/?\.codex["\']\s*\)\s*\)',
@@ -151,7 +164,7 @@ def scan(root):
             continue
         if os.path.basename(path) == "openai.yaml":
             hits.append({
-                "rule": "openai-yaml-file", "severity": "UNSUPPORTED", "file": path,
+                "rule": "openai-yaml-file", "severity": "UNSUPPORTED", "tier": "C", "file": path,
                 "line": 1, "match": os.path.basename(path),
                 "note": "Codex 的 agent 清单文件本身；DSH 无对应物 → 整文件删掉",
             })
@@ -159,7 +172,7 @@ def scan(root):
             for m in re.finditer(pat, text):
                 line = text.count("\n", 0, m.start()) + 1
                 hits.append({
-                    "rule": rid, "severity": sev, "file": path, "line": line,
+                    "rule": rid, "severity": sev, "tier": TIER[sev][0], "file": path, "line": line,
                     "match": m.group(0)[:80], "note": note,
                 })
     return hits
@@ -441,14 +454,15 @@ def validate(path):
 
 def render_md(report):
     lines = [f"# migrate 报告：{report['name']}", ""]
-    lines += [f"- 源：`{report['source']}`"]
+    lines += TIER_LEGEND
+    lines += ["", f"- 源：`{report['source']}`"]
     if report.get("out"):
         lines += [f"- 产出：`{report['out']}`", f"- 正文：{report.get('body_bytes', '?')} B"]
     if report["problems"]:
-        lines += ["", "## 必须先解决"]
+        lines += ["", "## C 级 · 必须先解决"]
         lines += [f"- [ ] {p}" for p in report["problems"]]
     if report["applied"]:
-        lines += ["", "## 已自动改写"]
+        lines += ["", "## A 级 · 已自动改写"]
         for a in report["applied"]:
             where = f" · {a['file']}" if a.get("file") else ""
             lines.append(f"- `{a['rule']}` ×{a['count']}{where}")
@@ -456,7 +470,7 @@ def render_md(report):
     rewrites = [h for h in report["hits"] if h["severity"] == "REWRITE"]
     warns = [h for h in report["hits"] if h["severity"] == "WARN"]
     if unsupported:
-        lines += ["", "## DSH 没有对应物（人工处置）"]
+        lines += ["", "## C 级 · DSH 没有对应物（原样保留）"]
         grouped = {}
         for h in unsupported:
             grouped.setdefault(h["rule"], []).append(h)
@@ -466,7 +480,7 @@ def render_md(report):
                 loc = os.path.relpath(h["file"], report["source"]) if os.path.isdir(report["source"]) else os.path.basename(h["file"])
                 lines.append(f"    - {loc}:{h['line']} `{h['match']}`")
     if rewrites and not report.get("out"):
-        lines += ["", "## 可自动改写（未写盘）"]
+        lines += ["", "## A 级 · 可自动改写（未写盘）"]
         grouped = {}
         for h in rewrites:
             grouped.setdefault(h["rule"], 0)
@@ -474,7 +488,7 @@ def render_md(report):
         lines += [f"- `{r}` ×{c} — {next(h['note'] for h in rewrites if h['rule'] == r)}" for r, c in grouped.items()]
     soft = list(report.get("warnings") or [])
     if soft or warns:
-        lines += ["", "## 建议处理（不拦人）"]
+        lines += ["", "## B 级 · 建议处理（不拦人）"]
         for w in soft:
             lines.append(f"- {w}")
         grouped = {}

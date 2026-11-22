@@ -41,13 +41,15 @@ python3 $P <src> --emit-sh /tmp/preflight.sh && sh /tmp/preflight.sh
 
 ## 报告怎么读
 
-| 堆 | 含义 | 你要做什么 |
+报告按 A/B/C 三档分段，档位回答的是「工具敢不敢替你动手」：
+
+| 档 | 段落 | 你要做什么 |
 |---|---|---|
-| **必须先解决** | 缺 name/description、没有文件头 | 不解决就别装 |
-| **建议处理（不拦人）** | description >240 字符、正文 >8 KB | 只影响每轮 token 开销，装得上 |
-| **已自动改写** | `$CODEX_HOME`→`$DSH_HOME`、`~/.codex/`→`~/.dsh/`、`apply_patch`→`edit`、`the shell tool`→`bash 工具`、name 转 kebab、白名单外字段进 metadata | 复核一眼 |
-| **DSH 没有对应物** | `image_gen`、`view_image`、`agents/openai.yaml`、`container.*`、`codex exec`、沙箱网络开关 | 删分支 / 换本地替代 / 标"需自备 key" |
-| **建议处理** | 个人绝对路径、`TODO` 占位、`.claude/` 路径、`mcp.json`、名字字段不规范 | 有空再清 |
+| **A** | 已自动改写 / 可自动改写（未写盘） | 复核一眼即可。判 A 很窄：新旧工具做同一件事，只是名字不同（`$CODEX_HOME`→`$DSH_HOME`、`apply_patch`→`edit`） |
+| **B** | 建议处理（不拦人） | 你看一眼自己决定：description >240 字符、个人绝对路径、`TODO`、`.claude/` 路径、`mcp.json` |
+| **C** | 必须先解决 / DSH 没有对应物（原样保留） | 缺 name/description 不解决就别装；`image_gen`、`view_image`、`agents/openai.yaml`、`container.*`、`codex exec`、`hooks:`、subagent 定义要删分支或换本地替代 |
+
+A 的标准故意收紧：报「已知缺失」最坏是人去补，把缺失悄悄换成凑合的工具就变成「未知缺陷」。
 
 ## 处置标准动作
 

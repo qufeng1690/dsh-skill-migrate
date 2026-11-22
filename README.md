@@ -83,12 +83,17 @@ python3 $P <src> --report PORT.md --json
 
 ## 输出长什么样
 
-（真实运行 `tests/fixtures/codex-sample` 的结果）
+（真实运行 `tests/fixtures/codex-sample` 的结果，节选）
 
 ```
 # migrate 报告：image-gen-legacy
 
-## DSH 没有对应物（人工处置）
+- **A 级**：等价改写，工具直接改（`--apply` 时写盘）。判 A 的标准很窄：
+  新旧工具做的是同一件事，只是名字不同。
+- **B 级**：只能算近似，或者只是建议。动手前要你看一眼，改了会丢什么得你自己判断。
+- **C 级**：找不到可靠替代，或者没有足够证据。原样保留，只报告，不动手。
+
+## C 级 · DSH 没有对应物（原样保留）
 - `tool-image-gen` ×1 — Codex 内置出图工具；DSH 无对应物 → 删分支或改成需自备 key 的 CLI 调用
     - SKILL.md:9 `image_gen`
 - `tool-view-image` ×1 — Codex 内置看图工具；DSH 用 read_image / read 代替
@@ -96,13 +101,27 @@ python3 $P <src> --report PORT.md --json
 - `openai-yaml-file` ×1 — Codex 的 agent 清单文件本身；DSH 无对应物 → 整文件删掉
     - agents/openai.yaml:1 `openai.yaml`
 
-## 可自动改写（未写盘）
+## A 级 · 可自动改写（未写盘）
 - `codex-home-var` ×1 — 环境变量改名（确认语义：home 还是配置目录）
 - `codex-home-env` ×1 — Codex home 改指 DSH home
 
-## 建议处理
+## B 级 · 建议处理（不拦人）
 - `fm-short-desc` ×1 — short-description 不在 DSH 白名单，会进 metadata
 ```
+
+### A/B/C 是什么意思
+
+这三档不是新加的判断，是把原来那套 `REWRITE / WARN / UNSUPPORTED` 换成人能直接用的说法。区别在于「工具敢不敢替你动手」：
+
+| 档 | 什么情况 | 工具怎么办 |
+|---|---|---|
+| **A** | 新旧工具做的是同一件事，只是名字不同（`apply_patch` → `edit`，`$CODEX_HOME` → `$DSH_HOME`） | 直接改，改完在报告里列一行记账 |
+| **B** | 只能算近似，或者只是建议（description 太长、写了个人绝对路径、`.claude/` 路径） | 不改，列出来，你看了自己决定 |
+| **C** | 找不到可靠替代（`image_gen`、`view_image`、`hooks:`、`container.*`） | 一个字都不动，原样保留并说明为什么 |
+
+判 A 的标准故意收得很窄。理由是猜错的代价不对称：报一个「已知缺失」，最坏是你自己去补；把一个缺失悄悄换成个凑合的东西，就变成了「未知缺陷」——脚本能跑，产出是废的，还得多花时间才发现。
+
+JSON 输出里每条命中都带 `tier` 字段（`A` / `B` / `C`），方便别的脚本按档过滤。
 
 ## 让别人的 agent 自己查：`--requires` / `--emit-sh`
 
@@ -147,6 +166,8 @@ sh preflight.sh          # 只检查，不安装
 这条正好接在 `dsh-skill-mover` 之后：搬过来的技能，agent 一条命令就知道缺什么，再问你要不要装。
 
 ## 检查清单（21 条 + 1 条软提醒）
+
+表里的「级别」就是报告里 A/B/C 的来源：`REWRITE` → A，`WARN` → B，`UNSUPPORTED` → C。
 
 | rule | 级别 | 说明 |
 |---|---|---|
@@ -260,6 +281,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu + macos、Python 3.9 + 3.12 上，�
 - `0.2.0` —— 19 条检查 + 1 条软提醒、5 组测试；description 超长不再阻塞（79 个真实技能回归后修正）
 - `0.3.0` —— 21 条检查、6 组测试；新增 `claude-hooks` / `claude-subagent`（Claude 高级工作流不再被静默丢掉），README 增「它不做什么」
 - `0.4.0` —— 新增 `--requires` / `--emit-sh`：从正文抽八类依赖，生成只查不装的 `preflight.sh`；7 组测试
+- `0.5.0` —— 报告按 A/B/C 三档分段并解释含义，JSON 每条命中带 `tier`；8 组测试
 
 ## License
 
