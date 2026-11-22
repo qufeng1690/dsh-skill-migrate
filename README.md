@@ -5,7 +5,7 @@
 把 **Codex / Claude Code 的技能**迁进 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)，并且确认迁完**真的能跑**。
 
 > **先说清楚定位**：这是一个补丁，不是完整方案。
-> 它只覆盖我实际踩到过的坑（17 条检查），靠的是一个字符串清单，不理解语义。
+> 它只覆盖我实际踩到过的坑（19 条检查），靠的是一个字符串清单，不理解语义。
 > 你没踩到的坑，它多半也看不见。发现了请开 Issue —— 加一条规则就是加一行。
 
 非官方工具，与 DeepSeek、OpenAI 无关联。
@@ -41,7 +41,7 @@ DSH 只读技能开头的 `name` 和 `description`，正文和脚本里写了什
 | 自动改写 7 类（路径、变量、工具名、文件名、frontmatter 归一化） | 判断能力是否等价 —— 只报告"我们没 `image_gen`"，不替你选替代品 |
 | 把"没有对应物"的地方列成清单，逼你做决定，不静默吞掉 | 装依赖、下载模型、跑技能里的命令 |
 | 干净输入不报警（有测试保证） | 读二进制、图片里的文字，或 `"image"+"_gen"` 这种拼接 |
-| 一条命令跑四个回归测试，CI 里也跑 | 评估触发质量 —— 那得用真实对话试 |
+| 一条命令跑五组回归测试，CI 里也跑 | 评估触发质量 —— 那得用真实对话试 |
 
 ## 安装
 
@@ -104,7 +104,7 @@ python3 $P <src> --report PORT.md --json
 - `fm-short-desc` ×1 — short-description 不在 DSH 白名单，会进 metadata
 ```
 
-## 检查清单（17 条）
+## 检查清单（19 条 + 1 条软提醒）
 
 | rule | 级别 | 说明 |
 |---|---|---|
@@ -121,12 +121,42 @@ python3 $P <src> --report PORT.md --json
 | `tool-container` | UNSUPPORTED | `container.open/exec/write_stdin` |
 | `codex-exec` | UNSUPPORTED | 依赖 `codex` CLI 的调用链 |
 | `codex-network` | UNSUPPORTED | Codex 沙箱网络开关 |
+| `runtime-net-install` | WARN | `pip install` / `npm install` / `npx` —— 运行时要联网装依赖，离线就断 |
+| `mcp-server-ref` | WARN | `mcp__` / `mcpServers` —— 依赖 MCP 服务器，没装时调用不可用 |
 | `abs-home-path` | WARN | `/Users/xxx/`、`/home/xxx/`、`C:\Users\` —— 别人机器上不存在 |
+| `fm-desc-long` | 软提醒 | description >240 字符 —— **不影响加载**，只影响每轮固定 token 开销 |
 | `fm-short-desc` / `fm-extra-keys` | WARN | 非白名单文件头字段 |
 | `todo-placeholder` | WARN | `TODO` / `FIXME`，DSH 校验器会拒绝 |
 | `claude-dir` / `mcp-json` | WARN | `.claude/` 路径、已被插件面板取代的 `mcp.json` |
 
 加一条规则 = 在 `scripts/migrate_skill.py` 的 `RULES` 里加一行 `(id, 正则, 级别, 说明, 替换)`，再在 `tests/run_tests.py` 补一条断言。
+
+## 语料回归：79 个真实技能
+
+规则不是拍脑袋加的。拿三个公开仓库的 79 个技能当语料跑过一遍（只做静态扫描，不加载、不执行，零模型开销）：
+
+| 来源 | 技能数 |
+|---|---|
+| `openai/skills`（`.system` + `.curated`） | 59 |
+| `anthropics/skills` | 19 |
+| `obra/superpowers` | 1 |
+
+这一轮改了两件事：
+
+1. **description >240 从「阻塞」降级为「软提醒」**。之前 79 个里有 **40 个**只因描述长被判「必须先解决」，而描述长只是 token 开销，根本不影响能不能装。退出码 1 的技能数从 60 降到 44。
+2. **补两条规则**：`runtime-net-install`（386 处，技能要联网装依赖）与 `mcp-server-ref`（35 处，依赖 MCP 服务器）。
+
+顺带一个发现：市面上最接近本项目的，是 OpenAI 自己仓库里的 `migrate-to-codex` 技能 —— 方向正好相反（Claude Code → Codex），做的是**指令文件、agent、MCP 配置的整体搬家**，不做工具名与路径的可执行性检查。两边互补，不冲突。
+
+想自己复现（克隆到临时目录，别放进 `~/.dsh/skills`，否则会被当成技能注入目录、白烧 token）：
+
+```bash
+mkdir -p /tmp/skill-corpus && cd /tmp/skill-corpus
+git clone --depth 1 https://github.com/openai/skills.git openai-skills
+git clone --depth 1 https://github.com/anthropics/skills.git anthropic-skills
+for d in */; do find "$d" -name SKILL.md | sed 's|/SKILL.md||' ; done \
+  | while read d; do python3 scripts/migrate_skill.py "$d" --json; done
+```
 
 ## 它查不到什么（重要）
 
@@ -161,7 +191,7 @@ env | grep -iE "codex|dsh" >> miss.json
 ## 开发
 
 ```bash
-python3 tests/run_tests.py          # 四个用例，只用标准库
+python3 tests/run_tests.py          # 五个用例，只用标准库
 pip install pyyaml && python3 tests/run_tests.py   # 有 pyyaml 的路径也测一遍
 ```
 
@@ -169,7 +199,8 @@ CI（`.github/workflows/ci.yml`）在 ubuntu + macos、Python 3.9 + 3.12 上，�
 
 ## 版本
 
-- `0.1.0` —— 17 条检查、4 组测试、双解析器（pyyaml / 内置）
+- `0.1.0` —— 17 条检查、5 组测试、双解析器（pyyaml / 内置）
+- `0.2.0` —— 19 条检查 + 1 条软提醒、5 组测试；description 超长不再阻塞（79 个真实技能回归后修正）
 
 ## License
 
@@ -187,6 +218,6 @@ python3 scripts/migrate_skill.py <skill-dir> --apply    # rewrite + install to ~
 python3 tests/run_tests.py                              # stdlib only
 ```
 
-17 checks across three buckets: **auto-rewritten** (`CODEX_HOME` → `DSH_HOME`, tool renames, frontmatter normalization), **no DSH equivalent** (`image_gen`, `view_image`, `openai.yaml`, `codex exec`, sandbox network flags), **warnings** (personal absolute paths, TODO placeholders, `.claude/` paths). Exit code `0` clean, `1` needs attention, `2` unreadable source.
+19 checks (+1 soft warning) across three buckets: **auto-rewritten** (`CODEX_HOME` → `DSH_HOME`, tool renames, frontmatter normalization), **no DSH equivalent** (`image_gen`, `view_image`, `openai.yaml`, `codex exec`, sandbox network flags), **warnings** (personal absolute paths, TODO placeholders, `.claude/` paths). Exit code `0` clean, `1` needs attention, `2` unreadable source.
 
 Scope disclaimer: this is a patch over the pitfalls I actually hit, implemented as a string list — it does not understand semantics, and misses concatenated names or non-Python env reads. Complements discovery/metadata tools such as `dsh-skillport` and `dsh-skill-adapter`. Unofficial, not affiliated with DeepSeek or OpenAI. MIT.

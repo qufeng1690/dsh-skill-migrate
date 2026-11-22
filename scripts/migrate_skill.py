@@ -72,6 +72,10 @@ RULES = [
      "非白名单 frontmatter 键 → 塞 metadata 或挪正文", None),
     ("abs-home-path", r'/Users/[A-Za-z0-9_.-]+/|/home/[A-Za-z0-9_.-]+/|[A-Za-z]:\\Users\\', "WARN",
      "个人电脑的绝对路径；别人机器上没有这个目录，改成占位符或相对路径", None),
+    ("runtime-net-install", r'(?m)^\s*(?:python3?\s+-m\s+)?pip3?\s+install|^\s*npm\s+(?:install|i)\b|\bnpx\s+\w', "WARN",
+     "运行时要联网装依赖；离线或没权限的机器上第一步就断，正文里应写清失败怎么办", None),
+    ("mcp-server-ref", r'mcp__|mcpServers|"mcpServers"', "WARN",
+     "依赖 MCP 服务器；DSH 的工具是 mcp__<server>__<tool>，服务器没装时这些调用全不可用", None),
     ("todo-placeholder", r'TODO|\[TODO[^\]]*\]|FIXME', "WARN",
      "校验器会因未完成的 TODO 占位报错", None),
     ("claude-dir", r'~?/?\.claude/|CLAUDE\.md', "WARN",
@@ -181,8 +185,6 @@ def normalize_frontmatter(fm, applied):
         applied.append({"rule": "fm-name-kebab", "count": 1, "file": f"name: {old} → {fixed['name']}"})
     if fixed.get("description"):
         desc = re.sub(r"\s+", " ", str(fixed["description"])).strip()
-        if len(desc) > DESC_SOFT_LIMIT:
-            problems.append(f"description {len(desc)} 字符，超过软上限 {DESC_SOFT_LIMIT}（每轮固定开销）")
         fixed["description"] = desc
     extra = {k: v for k, v in fixed.items() if k not in DSH_KEYS}
     if extra:
@@ -193,7 +195,17 @@ def normalize_frontmatter(fm, applied):
         for k in extra:
             fixed.pop(k, None)
         applied.append({"rule": "fm-extra→metadata", "count": len(extra), "file": ", ".join(sorted(extra))})
-    return {k: fixed[k] for k in KEY_ORDER if k in fixed} | {k: v for k, v in fixed.items() if k not in KEY_ORDER}, problems
+    out = {k: fixed[k] for k in KEY_ORDER if k in fixed} | {k: v for k, v in fixed.items() if k not in KEY_ORDER}
+    return out, problems
+
+
+def desc_warnings(fm):
+    """description 超长只是每轮固定开销，不影响加载 —— 不该拦人。"""
+    desc = re.sub(r"\s+", " ", str(fm.get("description") or "")).strip()
+    if len(desc) > DESC_SOFT_LIMIT:
+        return [f"`fm-desc-long` — description {len(desc)} 字符，超过 {DESC_SOFT_LIMIT} 软上限；"
+                f"不影响加载，只影响每轮固定 token 开销"]
+    return []
 
 
 def _emit_scalar(v):
@@ -254,6 +266,7 @@ def port(src, out, apply_changes, quiet=False):
         "frontmatter_before": dict(fm),
         "frontmatter_after": None,
         "problems": problems,
+        "warnings": desc_warnings(fm),
         "hits": hits,
         "applied": [],
         "out": None,
@@ -344,8 +357,11 @@ def render_md(report):
             grouped.setdefault(h["rule"], 0)
             grouped[h["rule"]] += 1
         lines += [f"- `{r}` ×{c} — {next(h['note'] for h in rewrites if h['rule'] == r)}" for r, c in grouped.items()]
-    if warns:
-        lines += ["", "## 建议处理"]
+    soft = list(report.get("warnings") or [])
+    if soft or warns:
+        lines += ["", "## 建议处理（不拦人）"]
+        for w in soft:
+            lines.append(f"- {w}")
         grouped = {}
         for h in warns:
             grouped.setdefault(h["rule"], []).append(h)

@@ -109,12 +109,21 @@ def test_claude_frontmatter_keys():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_long_description_is_warning_not_blocker():
+    print("description 超长只提醒、不拦截")
+    rc, r = run(os.path.join(FIXTURES, "long-desc-sample"))
+    check("退出码 0", rc == 0, f"rc={rc}")
+    check("不阻塞", r["problems"] == [], str(r["problems"]))
+    check("有软提醒", any("fm-desc-long" in w for w in r.get("warnings", [])), str(r.get("warnings")))
+
+
 def main():
     for fn in (
         test_dry_run_flags_codex_leftovers,
         test_apply_rewrites_and_normalizes,
         test_clean_input_stays_quiet,
         test_claude_frontmatter_keys,
+        test_long_description_is_warning_not_blocker,
     ):
         fn()
     print()

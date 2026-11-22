@@ -29,7 +29,8 @@ python3 $P <src> --report PORT.md --json        # 存报告 / 机器可读
 
 | 堆 | 含义 | 你要做什么 |
 |---|---|---|
-| **必须先解决** | 缺 name/description、description >240 字符、正文 >8 KB、没有文件头 | 不解决就别装 |
+| **必须先解决** | 缺 name/description、没有文件头 | 不解决就别装 |
+| **建议处理（不拦人）** | description >240 字符、正文 >8 KB | 只影响每轮 token 开销，装得上 |
 | **已自动改写** | `$CODEX_HOME`→`$DSH_HOME`、`~/.codex/`→`~/.dsh/`、`apply_patch`→`edit`、`the shell tool`→`bash 工具`、name 转 kebab、白名单外字段进 metadata | 复核一眼 |
 | **DSH 没有对应物** | `image_gen`、`view_image`、`agents/openai.yaml`、`container.*`、`codex exec`、沙箱网络开关 | 删分支 / 换本地替代 / 标"需自备 key" |
 | **建议处理** | 个人绝对路径、`TODO` 占位、`.claude/` 路径、`mcp.json`、名字字段不规范 | 有空再清 |
@@ -41,6 +42,8 @@ python3 $P <src> --report PORT.md --json        # 存报告 / 机器可读
 - **`view_image`**：换成 `read_image`（看图）或 `read`（看文本）。
 - **个人绝对路径** `/Users/xxx/...`：改成占位符（`SAMPLE`、`TARGET_DIR`）或相对路径，否则别人装上第一句就断。
 - **`codex exec` / `codex-network`**：换成 bash + 文件策略表述，改不动的明确标注不适用。
+- **`pip install` / `npm install` / `npx`**：技能要联网装依赖时，正文里得写清失败怎么办；离线机器上第一步就断。
+- **`mcp__` / `mcpServers`**：依赖 MCP 服务器。DSH 工具名是 `mcp__<server>__<tool>`，服务器没装时这些调用全不可用，正文要给出降级路径。
 
 ## 验收三步
 
