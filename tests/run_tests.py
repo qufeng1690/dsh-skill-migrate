@@ -172,6 +172,19 @@ def test_tiers_abc_are_reported():
     check("C 级段落说明原样保留", "原样保留" in md, md[:400])
 
 
+def test_prose_and_namespaces_are_not_dependencies():
+    print("正文散文和 XML 命名空间不算依赖")
+    rc, r = run(os.path.join(FIXTURES, "noise-sample"))
+    tools = {i["name"] for i in r["requires"]["tools"]}
+    check("散文里的 which restores 不算工具", "restores" not in tools, str(sorted(tools)))
+    check("散文里的 which the 不算工具", "the" not in tools, str(sorted(tools)))
+    check("代码块里的 python3 算工具", "python3" in tools, str(sorted(tools)))
+    urls = {i["name"] for i in r["requires"]["urls"]}
+    check("命名空间 URL 被过滤", not any("openxmlformats" in u or "openoffice" in u for u in urls), str(sorted(urls)))
+    pips = {i["name"] for i in r["requires"]["python"]}
+    check("代码块里的 pip 包照常抽出", "python-docx" in pips, str(sorted(pips)))
+
+
 def main():
     for fn in (
         test_dry_run_flags_codex_leftovers,
@@ -182,6 +195,7 @@ def main():
         test_claude_advanced_workflows_are_flagged,
         test_requires_extraction_and_preflight,
         test_tiers_abc_are_reported,
+        test_prose_and_namespaces_are_not_dependencies,
     ):
         fn()
     print()

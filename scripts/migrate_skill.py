@@ -269,6 +269,43 @@ IGNORE_BINS = {
 }
 IGNORE_ENV = {"PATH", "HOME", "PWD", "SHELL", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM"}
 URL_RE = re.compile(r'https?://[^\s)"\'`<>]+')
+CODE_FENCE = re.compile(r'(?ms)^```[^\n]*\n(.*?)^```')
+# XML 命名空间、许可证链接这类"不是给人访问的地址"，别塞进 preflight 去 curl
+NS_URL_HOSTS = (
+    "schemas.openxmlformats.org", "schemas.microsoft.com", "openxmlformats.org",
+    "www.w3.org", "purl.org", "ns.adobe.com", "json-schema.org",
+    "www.apache.org/licenses", "creativecommons.org/licenses",
+    "openoffice.org", "oasis-open.org", "xmlns.com",
+)
+
+
+def _is_noise_url(url):
+    low = url.lower()
+    return any(h in low for h in NS_URL_HOSTS) or low.endswith((".xsd", ".dtd", ".rng"))
+
+
+def _fence_commands(blob):
+    """只从围栏代码块里认命令。正文明文里的 "reads - ..." 不是命令。"""
+    cmds = []
+    for block in CODE_FENCE.finditer(blob):
+        for raw in block.group(1).splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            line = re.sub(r'^\$\s*', '', line)
+            line = re.sub(r'^(?:sudo|env)\s+', '', line)
+            m = re.match(r'([a-z][a-z0-9_.\-]{1,20})(.*)$', line)
+            if not m:
+                continue
+            word, rest = m.group(1), m.group(2)
+            if not rest.strip():          # 光一个词，不像命令
+                continue
+            if not rest.startswith(" "):
+                continue
+            if not re.match(r"""\s+(-{1,2}[A-Za-z]|["'$./~]|\S+/)""", rest):
+                continue
+            cmds.append(word)
+    return cmds
 
 
 def _uniq(items):
@@ -300,12 +337,13 @@ def collect_requires(root):
     npms = re.findall(r'npm\s+(?:install|i)\s+(?:-g\s+)?(@?[A-Za-z0-9_./\-]+)', blob)
     npxs = re.findall(r'npx\s+(@?[A-Za-z0-9_./\-]+)', blob)
     brews = re.findall(r'brew\s+install\s+(?:--cask\s+)?([A-Za-z0-9@/.\-]+)', blob)
-    checked = re.findall(r'(?:command\s+-v|which)\s+([A-Za-z0-9_.\-]+)', blob)
-    fences = re.findall(r'(?m)^(?:\s*\$\s*)?(?:(?:sudo|env)\s+)?([a-z][a-z0-9_.\-]{1,20})\s+-', blob)
+    # 只认 `command -v x` / `which x` 出现在代码块或反引号里的；正文里 "which restores" 是散文
+    checked = re.findall(r'(?m)(?:^\s*\$\s*|`)\s*(?:command\s+-v|which)\s+([A-Za-z0-9_.\-]+)', blob)
+    fences = _fence_commands(blob)
     envs = re.findall(r'\$\{?([A-Z][A-Z0-9_]{2,})\}?', blob)
     paths = re.findall(r'(?:~/[^\s"\'`)|<>,;]+|/var/[^\s"\'`)|<>,;]+|/Users/[^\s"\'`)|<>,;]+)', blob)
     mcps = re.findall(r'mcp__([A-Za-z0-9_]+)__', blob)
-    urls = URL_RE.findall(blob)
+    urls = [u for u in URL_RE.findall(blob) if not _is_noise_url(u)]
 
     tools = _uniq([t for t in checked + fences if t not in IGNORE_BINS])
     return {
