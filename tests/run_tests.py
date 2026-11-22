@@ -117,6 +117,18 @@ def test_long_description_is_warning_not_blocker():
     check("有软提醒", any("fm-desc-long" in w for w in r.get("warnings", [])), str(r.get("warnings")))
 
 
+def test_claude_advanced_workflows_are_flagged():
+    print("Claude 高级工作流不被静默丢")
+    rc, r = run(os.path.join(FIXTURES, "claude-advanced-sample"))
+    rules = {h["rule"] for h in r["hits"]}
+    check("退出码 1（有必须先解决的）", rc == 1, f"rc={rc}")
+    check("检出 hooks", "claude-hooks" in rules, str(sorted(rules)))
+    check("检出 subagent", "claude-subagent" in rules, str(sorted(rules)))
+    check("列为 DSH 无对应物",
+          any(h["rule"] in {"claude-hooks", "claude-subagent"} and h["severity"] == "UNSUPPORTED"
+              for h in r["hits"]), str(r["hits"])[:200])
+
+
 def main():
     for fn in (
         test_dry_run_flags_codex_leftovers,
@@ -124,6 +136,7 @@ def main():
         test_clean_input_stays_quiet,
         test_claude_frontmatter_keys,
         test_long_description_is_warning_not_blocker,
+        test_claude_advanced_workflows_are_flagged,
     ):
         fn()
     print()

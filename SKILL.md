@@ -43,6 +43,8 @@ python3 $P <src> --report PORT.md --json        # 存报告 / 机器可读
 - **个人绝对路径** `/Users/xxx/...`：改成占位符（`SAMPLE`、`TARGET_DIR`）或相对路径，否则别人装上第一句就断。
 - **`codex exec` / `codex-network`**：换成 bash + 文件策略表述，改不动的明确标注不适用。
 - **`pip install` / `npm install` / `npx`**：技能要联网装依赖时，正文里得写清失败怎么办；离线机器上第一步就断。
+- **Claude 的 `hooks:` / `PreToolUse`**：DSH 没有插件级生命周期钩子，这段行为搬过去就是静默丢失 → 改写成技能正文里的显式步骤，或一个前置 bash 检查。
+- **`.claude/agents/` / `Task(subagent_type=…)`**：Claude 的 subagent 与 DSH 的 subagent 语义不同（独立会话派发）。别照搬，按 DSH 的 `subagent` 工具重写调用点。
 - **`mcp__` / `mcpServers`**：依赖 MCP 服务器。DSH 工具名是 `mcp__<server>__<tool>`，服务器没装时这些调用全不可用，正文要给出降级路径。
 
 ## 验收三步

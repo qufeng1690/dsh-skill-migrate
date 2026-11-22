@@ -5,7 +5,7 @@
 把 **Codex / Claude Code 的技能**迁进 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)，并且确认迁完**真的能跑**。
 
 > **先说清楚定位**：这是一个补丁，不是完整方案。
-> 它只覆盖我实际踩到过的坑（19 条检查），靠的是一个字符串清单，不理解语义。
+> 它只覆盖我实际踩到过的坑（21 条检查），靠的是一个字符串清单，不理解语义。
 > 你没踩到的坑，它多半也看不见。发现了请开 Issue —— 加一条规则就是加一行。
 
 非官方工具，与 DeepSeek、OpenAI 无关联。
@@ -41,7 +41,7 @@ DSH 只读技能开头的 `name` 和 `description`，正文和脚本里写了什
 | 自动改写 7 类（路径、变量、工具名、文件名、frontmatter 归一化） | 判断能力是否等价 —— 只报告"我们没 `image_gen`"，不替你选替代品 |
 | 把"没有对应物"的地方列成清单，逼你做决定，不静默吞掉 | 装依赖、下载模型、跑技能里的命令 |
 | 干净输入不报警（有测试保证） | 读二进制、图片里的文字，或 `"image"+"_gen"` 这种拼接 |
-| 一条命令跑五组回归测试，CI 里也跑 | 评估触发质量 —— 那得用真实对话试 |
+| 一条命令跑六组回归测试，CI 里也跑 | 评估触发质量 —— 那得用真实对话试 |
 
 ## 安装
 
@@ -104,7 +104,7 @@ python3 $P <src> --report PORT.md --json
 - `fm-short-desc` ×1 — short-description 不在 DSH 白名单，会进 metadata
 ```
 
-## 检查清单（19 条 + 1 条软提醒）
+## 检查清单（21 条 + 1 条软提醒）
 
 | rule | 级别 | 说明 |
 |---|---|---|
@@ -123,6 +123,8 @@ python3 $P <src> --report PORT.md --json
 | `codex-network` | UNSUPPORTED | Codex 沙箱网络开关 |
 | `runtime-net-install` | WARN | `pip install` / `npm install` / `npx` —— 运行时要联网装依赖，离线就断 |
 | `mcp-server-ref` | WARN | `mcp__` / `mcpServers` —— 依赖 MCP 服务器，没装时调用不可用 |
+| `claude-hooks` | UNSUPPORTED | Claude Code 的 `hooks:` / `PreToolUse` 等生命周期钩子 —— DSH 没有插件级 hooks，这段行为会被静默丢掉 |
+| `claude-subagent` | UNSUPPORTED | `.claude/agents/`、`Task(subagent_type=…)` —— DSH 的 subagent 是独立会话派发，语义不同 |
 | `abs-home-path` | WARN | `/Users/xxx/`、`/home/xxx/`、`C:\Users\` —— 别人机器上不存在 |
 | `fm-desc-long` | 软提醒 | description >240 字符 —— **不影响加载**，只影响每轮固定 token 开销 |
 | `fm-short-desc` / `fm-extra-keys` | WARN | 非白名单文件头字段 |
@@ -158,16 +160,29 @@ for d in */; do find "$d" -name SKILL.md | sed 's|/SKILL.md||' ; done \
   | while read d; do python3 scripts/migrate_skill.py "$d" --json; done
 ```
 
-## 它查不到什么（重要）
+## 它不做什么（这是设计，不是遗漏）
 
-已知漏检，欢迎补充：
+有人看完之后列过一串不足。大部分是对的，但其中一半是**主动不做**——因为做了会比不做更糟。下面把话说清楚，你就能判断这个工具配不配你的场景：
+
+| 你可能期待 | 它实际的行为 | 为什么不那样做 |
+|---|---|---|
+| 读懂代码语义，判断这段逻辑还能不能跑 | 只做正则匹配，按 `文件:行号` 报位置 | 语义分析要编译器或模型，成本高且会误判；宁可漏报，不乱报 |
+| 永远认得所有平台的新工具 | 21 条规则，写在代码里，明写着会漏 | 未知工具名的正确出口是 Issue 模板，不是猜 |
+| 发现工具不存在，顺手挑个最佳替代品 | 只说「DSH 没有 `image_gen`」，不指定换哪个 | 换成什么取决于你有没有 key、离不离线；猜错比不换更贵 |
+| 自动把缺的依赖装上 | 只数出 `pip install` / `npm install` 的行数和位置 | 改环境该由人决定，而且装依赖本身会引入网络失败 |
+| 测一下正文里的网址通不通 | 不联网，一个请求都不发 | 同一技能在墙内墙外结论不同；静态结论更稳，要测你自己 `curl` |
+| 保证技能会被正确触发 | 只保证描述合规、不超长 | 触发是运行时行为，只能真跑；静态判断不了 |
+| 把 Claude 的 hooks 和 subagents 一起搬过来 | 检出并标成 **DSH 没有对应物**，等人决策 | 语义完全不同，静默搬过去等于行为丢失 —— 这条正是 v0.3.0 补的 |
+| 保证迁移后行为 100% 一致 | 只保证「没有指向不存在东西的死引用」 | 死引用可判定，行为等价不可判定 |
+
+换句话说：**它管的是"会不会第一步就断"，不管"效果好不好"。**
+
+### 仍然会漏的情形
 
 - **拼接构造的名字**：`"image" + "_gen"`、base64、变量拼接。
 - **非 Python 的 env 读取**：`env::var("CODEX_HOME")`（Rust）、`os.Getenv`（Go）、`System.getenv`（Java）。
-- **Claude 的 hooks / subagents / `settings.json` 语义**：只报路径，不判断行为。
-- **网络依赖**：正文让你 `curl` 某个外网地址，它不管能不能连通。
-- **触发质量**：描述压到一行只省 token，触发准不准得用真实对话试。
 - **二进制与图片里的字符串**：只读文本。
+- **Claude `settings.json` 的实际语义**：只报路径，不判断它会做什么。
 
 如果你踩到了清单外的坑，用这个命令把现场打出来，连同原始技能目录（能公开的话）一起提 Issue：
 
@@ -201,6 +216,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu + macos、Python 3.9 + 3.12 上，�
 
 - `0.1.0` —— 17 条检查、5 组测试、双解析器（pyyaml / 内置）
 - `0.2.0` —— 19 条检查 + 1 条软提醒、5 组测试；description 超长不再阻塞（79 个真实技能回归后修正）
+- `0.3.0` —— 21 条检查、6 组测试；新增 `claude-hooks` / `claude-subagent`（Claude 高级工作流不再被静默丢掉），README 增「它不做什么」
 
 ## License
 
@@ -218,6 +234,6 @@ python3 scripts/migrate_skill.py <skill-dir> --apply    # rewrite + install to ~
 python3 tests/run_tests.py                              # stdlib only
 ```
 
-19 checks (+1 soft warning) across three buckets: **auto-rewritten** (`CODEX_HOME` → `DSH_HOME`, tool renames, frontmatter normalization), **no DSH equivalent** (`image_gen`, `view_image`, `openai.yaml`, `codex exec`, sandbox network flags), **warnings** (personal absolute paths, TODO placeholders, `.claude/` paths). Exit code `0` clean, `1` needs attention, `2` unreadable source.
+21 checks (+1 soft warning) across three buckets: **auto-rewritten** (`CODEX_HOME` → `DSH_HOME`, tool renames, frontmatter normalization), **no DSH equivalent** (`image_gen`, `view_image`, `openai.yaml`, `codex exec`, sandbox network flags), **warnings** (personal absolute paths, TODO placeholders, `.claude/` paths). Exit code `0` clean, `1` needs attention, `2` unreadable source.
 
 Scope disclaimer: this is a patch over the pitfalls I actually hit, implemented as a string list — it does not understand semantics, and misses concatenated names or non-Python env reads. Complements discovery/metadata tools such as `dsh-skillport` and `dsh-skill-adapter`. Unofficial, not affiliated with DeepSeek or OpenAI. MIT.
