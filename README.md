@@ -282,7 +282,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu + macos、Python 3.9 + 3.12 上，�
 - `0.3.0` —— 21 条检查、6 组测试；新增 `claude-hooks` / `claude-subagent`（Claude 高级工作流不再被静默丢掉），README 增「它不做什么」
 - `0.4.0` —— 新增 `--requires` / `--emit-sh`：从正文抽八类依赖，生成只查不装的 `preflight.sh`；7 组测试
 - `0.5.0` —— 报告按 A/B/C 三档分段并解释含义，JSON 每条命中带 `tier`；8 组测试
-- `0.5.1` —— 修依赖抽取的两处误报：正文英文 `which restores` 被当成命令、XML 命名空间被当外网依赖；9 组测试
+- `0.5.1` —— 修依赖抽取的误报（正文英文、XML 命名空间、Swift 代码行、正文 TODO）；10 组测试
 
 ## License
 
