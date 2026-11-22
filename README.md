@@ -1,5 +1,7 @@
 # dsh-skill-migrate
 
+[![ci](https://github.com/qufeng1690/dsh-skill-migrate/actions/workflows/ci.yml/badge.svg)](https://github.com/qufeng1690/dsh-skill-migrate/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.9%20%7C%203.12-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
 把 **Codex / Claude Code 的技能**迁进 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)，并且确认迁完**真的能跑**。
 
 > **先说清楚定位**：这是一个补丁，不是完整方案。
