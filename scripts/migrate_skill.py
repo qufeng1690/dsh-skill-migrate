@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""migrate_skill.py — 把 Codex / Claude Code 生态的 skill 迁移成 DSH 能真正跑的样子。
+
+做的事：
+  1. 解析 frontmatter，按 DSH 白名单归一化（多余键塞 metadata，name 转 kebab）
+  2. 全目录扫描 Codex / Claude 专有标记，按 REWRITE / UNSUPPORTED / WARN 分级
+  3. REWRITE 类直接替换（--apply 时写盘），UNSUPPORTED 类列出人工处置点
+  4. 产出 PORT.md 报告，可选跑 quick_validate 复核
+
+用法：
+  python3 migrate_skill.py SRC                     # 只体检，不写盘
+  python3 migrate_skill.py SRC --out DIR --apply    # 移植并写盘
+  python3 migrate_skill.py SRC --json               # 机器可读
+  python3 migrate_skill.py SRC --report PORT.md
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None
+
+TEXT_EXT = {
+    ".md", ".markdown", ".txt", ".py", ".sh", ".bash", ".zsh", ".js", ".mjs",
+    ".cjs", ".ts", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".rb",
+    ".pl", ".ps1", ".bat", ".html", ".css", ".svg", ".xml",
+}
+SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", ".DS_Store"}
+
+DSH_KEYS = {"name", "description", "license", "allowed-tools", "metadata"}
+DESC_SOFT_LIMIT = 240       # 目录每轮固定开销，超了就该压
+BODY_SOFT_LIMIT = 8000      # 正文超过这个体量，说明该拆 references/
+
+# (id, regex, severity, note, replacement)
+# severity: REWRITE 可自动替换 / UNSUPPORTED 必须人工处置 / WARN 建议处理
+RULES = [
+    ("codex-home-env",
+     r'os\.environ\.get\(\s*["\']CODEX_HOME["\']\s*,\s*os\.path\.expanduser\(\s*["\']~/?\.codex["\']\s*\)\s*\)',
+     "REWRITE",
+     "Codex home 改指 DSH home",
+     'os.environ.get("DSH_HOME", os.path.expanduser("~/.dsh"))'),
+    ("codex-home-var", r'\$CODEX_HOME|\$\{CODEX_HOME\}', "REWRITE",
+     "环境变量改名（确认语义：home 还是配置目录）", "$DSH_HOME"),
+    ("codex-dir", r'~/?\.codex/|(?<![\w.])\.codex/', "REWRITE",
+     "路径指向 ~/.dsh（注意 ~/.codex/auth.json 这类凭据文件 DSH 不读）", "~/.dsh/"),
+    ("openai-yaml", r'agents/openai\.yaml|openai\.yaml', "UNSUPPORTED",
+     "Codex 专有的 agent 清单；DSH 不存在，生成代码整块删掉，别只改字符串", None),
+    ("tool-image-gen", r'\bimage_gen\b', "UNSUPPORTED",
+     "Codex 内置出图工具；DSH 无对应物 → 删分支或改成需自备 key 的 CLI 调用", None),
+    ("tool-view-image", r'\bview_image\b', "UNSUPPORTED",
+     "Codex 内置看图工具；DSH 用 read_image / read 代替", None),
+    ("tool-apply-patch", r'\bapply_patch\b', "REWRITE",
+     "Codex 的补丁工具 → DSH 的 edit / write", "edit"),
+    ("tool-shell", r'\b(?:the\s+)?shell\s+tool\b', "REWRITE",
+     "Codex 的 shell 工具 → DSH 的 bash 工具", "bash 工具"),
+    ("tool-container", r'\bcontainer\.(?:open|exec|write_stdin)\b', "UNSUPPORTED",
+     "Codex 容器工具；DSH 无对应物", None),
+    ("codex-exec", r'\bcodex\s+exec\b', "UNSUPPORTED",
+     "依赖 codex CLI 的调用链；本机没有 codex 可执行", None),
+    ("codex-network", r'codex-network|network_proxy|networkAccess', "UNSUPPORTED",
+     "Codex 沙箱网络开关；DSH 用 file policy / 审批策略表达", None),
+    ("fm-short-desc", r'(?m)^short-description\s*:', "WARN",
+     "short-description 不在 DSH 白名单，会进 metadata", None),
+    ("fm-extra-keys", r'(?m)^(title|version|applies_to|requires|intent|when-to-use|when_to_use)\s*:', "WARN",
+     "非白名单 frontmatter 键 → 塞 metadata 或挪正文", None),
+    ("abs-home-path", r'/Users/[A-Za-z0-9_.-]+/|/home/[A-Za-z0-9_.-]+/|[A-Za-z]:\\Users\\', "WARN",
+     "个人电脑的绝对路径；别人机器上没有这个目录，改成占位符或相对路径", None),
+    ("todo-placeholder", r'TODO|\[TODO[^\]]*\]|FIXME', "WARN",
+     "校验器会因未完成的 TODO 占位报错", None),
+    ("claude-dir", r'~?/?\.claude/|CLAUDE\.md', "WARN",
+     "Claude Code 的路径/文件名；确认 DSH 侧是否有对应物", None),
+    ("mcp-json", r'~/?\.dsh/mcp\.json|~/?\.codex/mcp\.json', "WARN",
+     "MCP 配置已改由插件面板写 cordis.patch.yml，mcp.json 不再被读取", None),
+]
+
+KEY_ORDER = ["name", "description", "license", "allowed-tools", "metadata"]
+
+
+def log(msg, quiet=False):
+    if not quiet:
+        print(msg, file=sys.stderr)
+
+
+def read_text(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def parse_frontmatter(text):
+    """返回 (fm_dict, body, had_frontmatter)。"""
+    if not text.startswith("---"):
+        return {}, text, False
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.S)
+    if not m:
+        return {}, text, False
+    raw, body = m.group(1), text[m.end():]
+    data = {}
+    if yaml is not None:
+        try:
+            loaded = yaml.safe_load(raw)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+    if not data:  # 手写最小解析器，容忍缺 pyyaml
+        for line in raw.splitlines():
+            mm = re.match(r"^([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$", line)
+            if mm and not line.startswith((" ", "\t")):
+                data[mm.group(1)] = mm.group(2).strip("\"'")
+    return data, body, True
+
+
+def kebab(name):
+    s = re.sub(r"[^0-9A-Za-z]+", "-", str(name)).strip("-").lower()
+    return re.sub(r"-{2,}", "-", s) or "unnamed-skill"
+
+
+def iter_text_files(root):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in TEXT_EXT or fn in {"SKILL.md", "README.md"}:
+                yield os.path.join(dirpath, fn)
+
+
+def scan(root):
+    hits = []
+    for path in iter_text_files(root):
+        try:
+            text = read_text(path)
+        except OSError:
+            continue
+        if os.path.basename(path) == "openai.yaml":
+            hits.append({
+                "rule": "openai-yaml-file", "severity": "UNSUPPORTED", "file": path,
+                "line": 1, "match": os.path.basename(path),
+                "note": "Codex 的 agent 清单文件本身；DSH 无对应物 → 整文件删掉",
+            })
+        for rid, pat, sev, note, repl in RULES:
+            for m in re.finditer(pat, text):
+                line = text.count("\n", 0, m.start()) + 1
+                hits.append({
+                    "rule": rid, "severity": sev, "file": path, "line": line,
+                    "match": m.group(0)[:80], "note": note,
+                })
+    return hits
+
+
+def rewrite_text(text, applied):
+    for rid, pat, sev, note, repl in RULES:
+        if sev != "REWRITE" or repl is None:
+            continue
+        new, n = re.subn(pat, repl.replace("\\", "\\\\"), text)
+        if n:
+            applied.append({"rule": rid, "count": n, "file": None})
+            text = new
+    return text
+
+
+def normalize_frontmatter(fm, applied):
+    fixed = dict(fm)
+    problems = []
+    if not fixed.get("name"):
+        problems.append("缺 name")
+    if not fixed.get("description"):
+        problems.append("缺 description")
+    if fixed.get("name") and not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", str(fixed["name"])):
+        old = fixed["name"]
+        fixed["name"] = kebab(old)
+        applied.append({"rule": "fm-name-kebab", "count": 1, "file": f"name: {old} → {fixed['name']}"})
+    if fixed.get("description"):
+        desc = re.sub(r"\s+", " ", str(fixed["description"])).strip()
+        if len(desc) > DESC_SOFT_LIMIT:
+            problems.append(f"description {len(desc)} 字符，超过软上限 {DESC_SOFT_LIMIT}（每轮固定开销）")
+        fixed["description"] = desc
+    extra = {k: v for k, v in fixed.items() if k not in DSH_KEYS}
+    if extra:
+        meta = fixed.get("metadata") if isinstance(fixed.get("metadata"), dict) else {}
+        for k, v in extra.items():
+            meta.setdefault(kebab(k), v)
+        fixed["metadata"] = meta
+        for k in extra:
+            fixed.pop(k, None)
+        applied.append({"rule": "fm-extra→metadata", "count": len(extra), "file": ", ".join(sorted(extra))})
+    return {k: fixed[k] for k in KEY_ORDER if k in fixed} | {k: v for k, v in fixed.items() if k not in KEY_ORDER}, problems
+
+
+def _emit_scalar(v):
+    """没有 pyyaml 时的最小 YAML 标量输出：只在必要时加引号。"""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if v is None:
+        return "null"
+    if isinstance(v, (int, float)):
+        return str(v)
+    s = str(v)
+    needs_quote = (
+        s == ""
+        or s != s.strip()
+        or "\n" in s
+        or any(ch in s for ch in ":#")
+        or s[0] in "-?[]{}&*!|>'\"%@`,"
+    )
+    return json.dumps(s, ensure_ascii=False) if needs_quote else s
+
+
+def dump_frontmatter(fm):
+    if yaml is not None:
+        body = yaml.safe_dump(fm, allow_unicode=True, sort_keys=False, default_flow_style=False).rstrip()
+    else:
+        lines = []
+        for k, v in fm.items():
+            if isinstance(v, dict):
+                lines.append(f"{k}:")
+                lines += [f"  {kk}: {_emit_scalar(vv)}" for kk, vv in v.items()]
+            else:
+                lines.append(f"{k}: {_emit_scalar(v)}")
+        body = "\n".join(lines)
+    return f"---\n{body}\n---\n"
+
+
+def port(src, out, apply_changes, quiet=False):
+    src_is_dir = os.path.isdir(src)
+    skill_md = os.path.join(src, "SKILL.md") if src_is_dir else src
+    if not os.path.isfile(skill_md):
+        log(f"[x] 找不到 SKILL.md: {skill_md}", quiet)
+        return None
+    text = read_text(skill_md)
+    fm, body, had_fm = parse_frontmatter(text)
+    if not had_fm:
+        log("[!] 没有 frontmatter，DSH 不会收录", quiet)
+
+    _, problems = normalize_frontmatter(fm, []) if fm else ([], [])
+    hits = scan(src)
+    applied_rewrites = []
+    for h in hits:
+        if h["severity"] == "REWRITE":
+            applied_rewrites.append(h)
+
+    report = {
+        "source": os.path.abspath(src),
+        "name": (kebab(fm["name"]) if fm.get("name") else (os.path.basename(src) if src_is_dir else "unknown")),
+        "frontmatter_before": dict(fm),
+        "frontmatter_after": None,
+        "problems": problems,
+        "hits": hits,
+        "applied": [],
+        "out": None,
+    }
+
+    if not apply_changes:
+        return report
+
+    fm_norm, problems = normalize_frontmatter(fm, report["applied"])
+    report["frontmatter_after"] = fm_norm
+
+    target = os.path.join(out, str(fm_norm.get("name") or os.path.basename(src)))
+    if os.path.abspath(target) == os.path.abspath(src):
+        log("[x] 源目录就是目标目录，换 --out", quiet)
+        return report
+    if os.path.exists(target):
+        shutil.rmtree(target)
+    if src_is_dir:
+        shutil.copytree(src, target, ignore=shutil.ignore_patterns(*SKIP_DIRS))
+    else:
+        os.makedirs(target, exist_ok=True)
+        shutil.copy2(src, os.path.join(target, "SKILL.md"))
+
+    for path in iter_text_files(target):
+        try:
+            original = read_text(path)
+        except OSError:
+            continue
+        chunk_applied = []
+        updated = rewrite_text(original, chunk_applied)
+        for item in chunk_applied:
+            item["file"] = os.path.relpath(path, target)
+            report["applied"].append(item)
+        if updated != original:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(updated)
+
+    skill_md_t = os.path.join(target, "SKILL.md")
+    t = read_text(skill_md_t)
+    _, body_t, has_fm = parse_frontmatter(t)
+    with open(skill_md_t, "w", encoding="utf-8") as fh:
+        fh.write(dump_frontmatter(fm_norm) + "\n" + body_t.lstrip("\n"))
+    report["out"] = target
+    report["body_bytes"] = len(body_t.encode("utf-8"))
+    if report["body_bytes"] > BODY_SOFT_LIMIT:
+        report["problems"].append(f"正文 {report['body_bytes']} B 超过软上限 {BODY_SOFT_LIMIT}，考虑拆 references/")
+    return report
+
+
+def validate(path):
+    checker = os.path.expanduser("~/.dsh/skills/skill-creator/scripts/quick_validate.py")
+    if not os.path.isfile(checker) or not os.path.isdir(path):
+        return None
+    proc = subprocess.run([sys.executable, checker, path], capture_output=True, text=True)
+    return {"code": proc.returncode, "out": (proc.stdout + proc.stderr).strip()}
+
+
+def render_md(report):
+    lines = [f"# migrate 报告：{report['name']}", ""]
+    lines += [f"- 源：`{report['source']}`"]
+    if report.get("out"):
+        lines += [f"- 产出：`{report['out']}`", f"- 正文：{report.get('body_bytes', '?')} B"]
+    if report["problems"]:
+        lines += ["", "## 必须先解决"]
+        lines += [f"- [ ] {p}" for p in report["problems"]]
+    if report["applied"]:
+        lines += ["", "## 已自动改写"]
+        for a in report["applied"]:
+            where = f" · {a['file']}" if a.get("file") else ""
+            lines.append(f"- `{a['rule']}` ×{a['count']}{where}")
+    unsupported = [h for h in report["hits"] if h["severity"] == "UNSUPPORTED"]
+    rewrites = [h for h in report["hits"] if h["severity"] == "REWRITE"]
+    warns = [h for h in report["hits"] if h["severity"] == "WARN"]
+    if unsupported:
+        lines += ["", "## DSH 没有对应物（人工处置）"]
+        grouped = {}
+        for h in unsupported:
+            grouped.setdefault(h["rule"], []).append(h)
+        for rule, hs in grouped.items():
+            lines.append(f"- `{rule}` ×{len(hs)} — {hs[0]['note']}")
+            for h in hs[:6]:
+                loc = os.path.relpath(h["file"], report["source"]) if os.path.isdir(report["source"]) else os.path.basename(h["file"])
+                lines.append(f"    - {loc}:{h['line']} `{h['match']}`")
+    if rewrites and not report.get("out"):
+        lines += ["", "## 可自动改写（未写盘）"]
+        grouped = {}
+        for h in rewrites:
+            grouped.setdefault(h["rule"], 0)
+            grouped[h["rule"]] += 1
+        lines += [f"- `{r}` ×{c} — {next(h['note'] for h in rewrites if h['rule'] == r)}" for r, c in grouped.items()]
+    if warns:
+        lines += ["", "## 建议处理"]
+        grouped = {}
+        for h in warns:
+            grouped.setdefault(h["rule"], []).append(h)
+        for rule, hs in grouped.items():
+            lines.append(f"- `{rule}` ×{len(hs)} — {hs[0]['note']}")
+    if report.get("validate"):
+        v = report["validate"]
+        lines += ["", "## quick_validate", "```", v["out"], "```"]
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Codex/Claude skill → DSH skill 迁移器")
+    ap.add_argument("src", help="源 skill 目录，或单个 .md 技能文件")
+    ap.add_argument("--out", default=os.path.expanduser("~/.dsh/skills"), help="输出根（默认 ~/.dsh/skills）")
+    ap.add_argument("--apply", action="store_true", help="真的写盘并做自动改写")
+    ap.add_argument("--report", help="把 PORT.md 写到这个路径")
+    ap.add_argument("--json", action="store_true", help="输出 JSON")
+    ap.add_argument("--no-validate", action="store_true", help="跳过 quick_validate")
+    args = ap.parse_args()
+
+    if not os.path.exists(args.src):
+        log(f"[x] 源不存在: {args.src}")
+        return 2
+
+    report = port(args.src, args.out, args.apply)
+    if report is None:
+        return 2
+    if args.apply and not args.no_validate and report.get("out"):
+        report["validate"] = validate(report["out"])
+
+    md = render_md(report)
+    if args.report:
+        with open(args.report, "w", encoding="utf-8") as fh:
+            fh.write(md)
+        log(f"[ok] 报告 → {args.report}")
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(md)
+    bad = any(h["severity"] == "UNSUPPORTED" for h in report["hits"]) or bool(report["problems"])
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

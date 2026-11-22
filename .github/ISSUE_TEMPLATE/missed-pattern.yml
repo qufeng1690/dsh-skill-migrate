@@ -1,0 +1,55 @@
+name: 漏检报告
+description: 某个 Codex/Claude 技能迁移后跑不起来，但 migrate_skill.py 没报出来
+title: "[漏检] "
+labels: ["missed-pattern"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢补坑。这个工具的规则表就那么长，漏检是常态，不是意外。
+
+        提交前请先跑一遍 `python3 scripts/migrate_skill.py <技能目录> --json`，确认它真的没报。
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 迁移后哪一步断了？报错原文是什么？
+      placeholder: |
+        skill 能加载，但正文第 3 步让我调用 xxx，DSH 里没有这个工具 / 脚本报 No such file or directory
+    validations:
+      required: true
+  - type: textarea
+    id: snippet
+    attributes:
+      label: 触发问题的原文
+      description: 贴出那几行（含文件路径和行号），不用整个技能
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: migrate 报告输出
+      description: 上面那条 --json 命令的结果
+      render: json
+    validations:
+      required: false
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 你认为是哪一类
+      options:
+        - 新的工具名（DSH 没有对应物）
+        - 新的路径写法（应该自动改写）
+        - 拼接/变量构造，静态扫描看不见
+        - 非文本内容（二进制、图片）
+        - 说不清
+    validations:
+      required: true
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 确认
+      options:
+        - label: 我知道这个工具是基于字符串匹配的补丁，不理解语义
+          required: true
