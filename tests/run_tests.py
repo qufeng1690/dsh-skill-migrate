@@ -185,6 +185,16 @@ def test_prose_and_namespaces_are_not_dependencies():
     check("代码块里的 pip 包照常抽出", "python-docx" in pips, str(sorted(pips)))
 
 
+def test_non_shell_fences_and_todo_prose():
+    print("非 shell 代码块与正文 TODO 不算问题")
+    rc, r = run(os.path.join(FIXTURES, "lang-sample"))
+    tools = {i["name"] for i in r["requires"]["tools"]}
+    check("swift 代码块里的 content 不算工具", "content" not in tools, str(sorted(tools)))
+    check("bash 代码块里的 xcodebuild 算工具", "xcodebuild" in tools, str(sorted(tools)))
+    rules = {h["rule"] for h in r["hits"]}
+    check("正文 TODO list 不算占位符", "todo-placeholder" not in rules, str(sorted(rules)))
+
+
 def main():
     for fn in (
         test_dry_run_flags_codex_leftovers,
@@ -196,6 +206,7 @@ def main():
         test_requires_extraction_and_preflight,
         test_tiers_abc_are_reported,
         test_prose_and_namespaces_are_not_dependencies,
+        test_non_shell_fences_and_todo_prose,
     ):
         fn()
     print()

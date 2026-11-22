@@ -93,7 +93,7 @@ RULES = [
      "运行时要联网装依赖；离线或没权限的机器上第一步就断，正文里应写清失败怎么办", None),
     ("mcp-server-ref", r'mcp__|mcpServers|"mcpServers"', "WARN",
      "依赖 MCP 服务器；DSH 的工具是 mcp__<server>__<tool>，服务器没装时这些调用全不可用", None),
-    ("todo-placeholder", r'TODO|\[TODO[^\]]*\]|FIXME', "WARN",
+    ("todo-placeholder", r'TODO\s*:|TODO\(|\[TODO[^\]]*\]|FIXME\s*:|<TODO>', "WARN",
      "校验器会因未完成的 TODO 占位报错", None),
     ("claude-dir", r'~?/?\.claude/|CLAUDE\.md', "WARN",
      "Claude Code 的路径/文件名；确认 DSH 侧是否有对应物", None),
@@ -269,7 +269,8 @@ IGNORE_BINS = {
 }
 IGNORE_ENV = {"PATH", "HOME", "PWD", "SHELL", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM"}
 URL_RE = re.compile(r'https?://[^\s)"\'`<>]+')
-CODE_FENCE = re.compile(r'(?ms)^```[^\n]*\n(.*?)^```')
+CODE_FENCE = re.compile(r'(?ms)^```([^\n]*)\n(.*?)^```')
+SHELL_FENCES = {"", "bash", "sh", "shell", "zsh", "console", "terminal", "cmd", "powershell", "pwsh", "fish"}
 # XML 命名空间、许可证链接这类"不是给人访问的地址"，别塞进 preflight 去 curl
 NS_URL_HOSTS = (
     "schemas.openxmlformats.org", "schemas.microsoft.com", "openxmlformats.org",
@@ -288,7 +289,10 @@ def _fence_commands(blob):
     """只从围栏代码块里认命令。正文明文里的 "reads - ..." 不是命令。"""
     cmds = []
     for block in CODE_FENCE.finditer(blob):
-        for raw in block.group(1).splitlines():
+        lang = block.group(1).strip().lower().split()[0] if block.group(1).strip() else ""
+        if lang not in SHELL_FENCES:
+            continue
+        for raw in block.group(2).splitlines():
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
@@ -357,7 +361,7 @@ def collect_requires(root):
                  for b in _uniq(brews)],
         "env": [{"name": e, "check": f'test -n "${{{e}:-}}"', "hint": f"export {e}=<值>"}
                 for e in _uniq([e for e in envs if e not in IGNORE_ENV])],
-        "paths": [{"name": p_, "check": _path_check(p_), "hint": "放到位或改技能里的路径"}
+        "paths": [{"name": p_, "check": _path_check(p_), "hint": "放到位或改技能里的路径（文档里的示例路径也会列出来，确认后再当依赖）"}
                   for p_ in _uniq(paths)],
         "mcp": [{"name": m, "check": "(在 DSH 设置→MCP Servers 里看)", "hint": f"加 MCP 服务器 {m}"}
                 for m in _uniq(mcps)],
