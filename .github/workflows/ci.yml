@@ -12,11 +12,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.9", "3.12"]
+        # 显式列出组合：ubuntu-latest 已经飘到 24.04/26.04，
+        # 那些镜像上没有 Python 3.9 的 x64 构建，用 22.04 固定住。
+        include:
+          - os: ubuntu-22.04
+            python: "3.9"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.9"
+          - os: macos-latest
+            python: "3.12"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: 无 pyyaml（内置解析器路径）
